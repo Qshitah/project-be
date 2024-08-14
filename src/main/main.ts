@@ -9,11 +9,13 @@
  * `./src/main.js` using webpack. This gives us some performance wins.
  */
 import path from 'path';
-import { app, BrowserWindow, shell, ipcMain } from 'electron';
+import { app, BrowserWindow, shell, ipcMain, screen } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import log from 'electron-log';
 import MenuBuilder from './menu';
 import { resolveHtmlPath } from './util';
+const fs = require('fs');
+const { generatePDF } = require('../renderer/components/generatePDF'); // Import your PDF generator
 
 class AppUpdater {
   constructor() {
@@ -29,6 +31,60 @@ ipcMain.on('ipc-example', async (event, arg) => {
   const msgTemplate = (pingPong: string) => `IPC test: ${pingPong}`;
   console.log(msgTemplate(arg));
   event.reply('ipc-example', msgTemplate('pong'));
+});
+
+ipcMain.on('save-order', (event, orderData) => {
+  const isDev = process.env.NODE_ENV === 'development';
+  const ordersFilePath = isDev
+    ? path.join(__dirname, '../renderer/data/orders.json')
+    : path.join(app.getPath('userData'), 'orders.json');
+      let ordersData = [];
+
+  if (fs.existsSync(ordersFilePath)) {
+    ordersData = JSON.parse(fs.readFileSync(ordersFilePath, 'utf8'));
+  }
+
+  const newOrder = {
+    id: (ordersData.length > 0 ? Math.max(...ordersData.map(order => order.id)) + 1 : 1),
+    ...orderData,
+  };
+
+  ordersData.push(newOrder);
+
+  fs.writeFileSync(ordersFilePath, JSON.stringify(ordersData, null, 2), 'utf8');
+
+  event.reply('order-saved', newOrder);
+});
+
+ipcMain.on('delete-order', (event, orderId) => {
+  const isDev = process.env.NODE_ENV === 'development';
+  const ordersFilePath = isDev
+    ? path.join(__dirname, '../renderer/data/orders.json')
+    : path.join(app.getPath('userData'), 'orders.json');
+
+  let ordersData = [];
+
+  if (fs.existsSync(ordersFilePath)) {
+    ordersData = JSON.parse(fs.readFileSync(ordersFilePath, 'utf8'));
+  }
+
+  const updatedOrders = ordersData.filter((order) => order.id !== orderId);
+
+  fs.writeFileSync(ordersFilePath, JSON.stringify(updatedOrders, null, 2), 'utf8');
+
+  event.reply('order-deleted', orderId);
+})
+
+// Print functionality
+ipcMain.handle('save-pdf', async (event, order) => {
+  const pdfBlob = generatePDF(order);
+  const filePath = path.join(app.getPath('documents'), `order_${order.id}.pdf`);
+  fs.writeFileSync(filePath, Buffer.from(await pdfBlob.arrayBuffer()));
+
+  // Open the PDF file with the default viewer
+  shell.openPath(filePath);
+
+  return filePath;
 });
 
 if (process.env.NODE_ENV === 'production') {
@@ -69,11 +125,13 @@ const createWindow = async () => {
     return path.join(RESOURCES_PATH, ...paths);
   };
 
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+
   mainWindow = new BrowserWindow({
     show: false,
-    width: 1024,
-    height: 728,
-    icon: getAssetPath('icon.png'),
+    width: width,      // Set width to the screen width
+    height: height,    // Set height to the screen height
+    icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: app.isPackaged
         ? path.join(__dirname, 'preload.js')
